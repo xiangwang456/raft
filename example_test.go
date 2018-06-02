@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/peterbourgon/raft"
+	"github.com/zoo-keeper/raft"
 )
 
 func ExampleNewServer_hTTP() {
