@@ -400,7 +400,7 @@ type logEntry struct {
 //		 ---------------------------------------------
 //		| CRC    | TERM   | INDEX  | SIZE   | COMMAND |
 //		 ---------------------------------------------
-//
+// 4位crc校验 8位term 8位index 4位大小字段 ，小端模式
 func (e *logEntry) encode(w io.Writer) error {
 	if len(e.Command) <= 0 {
 		return errNoCommand
@@ -431,6 +431,7 @@ func (e *logEntry) encode(w io.Writer) error {
 }
 
 // decode deserializes one log entry from the passed io.Reader.
+// 解码类型 ，先crc校验，再解析出term 、index 、command
 func (e *logEntry) decode(r io.Reader) error {
 	header := make([]byte, 24)
 
