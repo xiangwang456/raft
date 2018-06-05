@@ -130,6 +130,7 @@ func (l *raftLog) contains(index, term uint64) bool {
 //
 // This method satisfies the requirement that a log entry in an AppendEntries
 // call precisely follows the accompanying LastraftLogTerm and LastraftLogIndex.
+// 将 index后面的没有commit的元素删掉
 func (l *raftLog) ensureLastIs(index, term uint64) error {
 	l.Lock()
 	defer l.Unlock()
@@ -147,6 +148,7 @@ func (l *raftLog) ensureLastIs(index, term uint64) error {
 	// It's possible that the passed index is 0. It means the leader has come to
 	// decide we need a complete log rebuild. Of course, that's only valid if we
 	// haven't committed anything, so this check comes after that one.
+	// 初始化logEntry
 	if index == 0 {
 		for pos := 0; pos < len(l.entries); pos++ {
 			if l.entries[pos].commandResponse != nil {
@@ -286,6 +288,7 @@ func (l *raftLog) appendEntry(entry logEntry) error {
 // commitTo commits all log entries up to and including the passed commitIndex.
 // Commit means: synchronize the log entry to persistent storage, and call the
 // state machine apply function for the log entry's command.
+// 将commitIndex 以前的日志都提交，记录到 store里
 func (l *raftLog) commitTo(commitIndex uint64) error {
 	if commitIndex == 0 {
 		panic("commitTo(0)")
@@ -333,6 +336,7 @@ func (l *raftLog) commitTo(commitIndex uint64) error {
 
 		// Forward non-configuration commands to the state machine.
 		// Send the responses to the waiting client, if applicable.
+		// 如果该日志不是配置相关日志，则调用日志的apply方法，并等待回应
 		if !l.entries[pos].isConfiguration {
 			resp := l.apply(l.entries[pos].Index, l.entries[pos].Command)
 			if l.entries[pos].commandResponse != nil {

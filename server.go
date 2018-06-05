@@ -1055,6 +1055,7 @@ func (s *Server) handleAppendEntries(r appendEntries) (appendEntriesResponse, bo
 		// Configuration changes requre special preprocessing
 		var pm peerMap
 		if entry.isConfiguration {
+			//todo : 没太明白，如果是更改配置的entry，Command里包含了新的所有节点？
 			commandBuf := bytes.NewBuffer(entry.Command)
 			if err := gob.NewDecoder(commandBuf).Decode(&pm); err != nil {
 				panic("gob decode of peers failed")
@@ -1075,9 +1076,11 @@ func (s *Server) handleAppendEntries(r appendEntries) (appendEntriesResponse, bo
 			}
 
 			// Expulsion recognition
+			//
 			if _, ok := pm[s.id]; !ok {
 				entry.committed = make(chan bool)
 				go func() {
+					// todo : committed? 如果没有包含当前节点，则当前节点退出
 					if <-entry.committed {
 						s.logGeneric("non-leader expelled; shutting down")
 						q := make(chan struct{})
@@ -1106,6 +1109,7 @@ func (s *Server) handleAppendEntries(r appendEntries) (appendEntriesResponse, bo
 		// uses that configuration for all future decisions (it does not wait
 		// for the entry to become committed)."
 		if entry.isConfiguration {
+			// 如果是更给配置的entry ，返回false ，不需要写日志
 			if err := s.config.directSet(pm); err != nil {
 				return appendEntriesResponse{
 					Term:    s.term,

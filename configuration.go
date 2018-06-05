@@ -88,6 +88,7 @@ func (c *configuration) allPeers() peerMap {
 // pass returns true if the votes represented by the votes map are sufficient
 // to constitute a quorum. pass respects C_old,new requirements, which dictate
 // that any request must receive a majority from both C_old and C_new to pass.
+// 从旧配置和新配置都取得了大多数的通过
 func (c *configuration) pass(votes map[uint64]bool) bool {
 	c.RLock()
 	defer c.RUnlock()
