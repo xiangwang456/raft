@@ -585,6 +585,7 @@ func newNextIndex(pm peerMap, defaultNextIndex uint64) *nextIndex {
 	return ni
 }
 
+//找到所有peer的最小的next index ，也就是可以commit的index
 func (ni *nextIndex) bestIndex() uint64 {
 	ni.RLock()
 	defer ni.RUnlock()
@@ -876,6 +877,7 @@ func (s *Server) leaderSelect() {
 			// Only when we know all followers accepted the flush can we
 			// consider incrementing commitIndex and pushing out another
 			// round of flushes.
+			//当所有的follower都接受了appendEntry后 更新commitIndex
 			if successes == len(recipients) {
 				peersBestIndex := ni.bestIndex()
 				ourLastIndex := s.log.lastIndex()
@@ -1055,7 +1057,7 @@ func (s *Server) handleAppendEntries(r appendEntries) (appendEntriesResponse, bo
 		// Configuration changes requre special preprocessing
 		var pm peerMap
 		if entry.isConfiguration {
-			//todo : 没太明白，如果是更改配置的entry，Command里包含了新的所有节点？
+			//
 			commandBuf := bytes.NewBuffer(entry.Command)
 			if err := gob.NewDecoder(commandBuf).Decode(&pm); err != nil {
 				panic("gob decode of peers failed")
@@ -1080,7 +1082,7 @@ func (s *Server) handleAppendEntries(r appendEntries) (appendEntriesResponse, bo
 			if _, ok := pm[s.id]; !ok {
 				entry.committed = make(chan bool)
 				go func() {
-					// todo : committed? 如果没有包含当前节点，则当前节点退出
+					//   如果新的配置中没有包含当前节点，当前配置的这条日志一旦被提交了，则当前节点退出
 					if <-entry.committed {
 						s.logGeneric("non-leader expelled; shutting down")
 						q := make(chan struct{})
@@ -1109,7 +1111,7 @@ func (s *Server) handleAppendEntries(r appendEntries) (appendEntriesResponse, bo
 		// uses that configuration for all future decisions (it does not wait
 		// for the entry to become committed)."
 		if entry.isConfiguration {
-			// 如果是更给配置的entry ，返回false ，不需要写日志
+			// 如果是更给配置的entry ，返回false ，不需要commit 后面所有的决定都按照新的配置来
 			if err := s.config.directSet(pm); err != nil {
 				return appendEntriesResponse{
 					Term:    s.term,
