@@ -13,12 +13,15 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"os"
+	"path"
 )
 
 const (
 	follower  = "Follower"
 	candidate = "Candidate"
 	leader    = "Leader"
+	snapshotting = "snapshotting" // 增加快照角色
 )
 
 const (
@@ -130,11 +133,15 @@ type Server struct {
 	vote    uint64 // who we voted for this term, if applicable
 	log     *raftLog
 	config  *configuration
+	StateMachine *StateMachine
+	snapshot *Snapshot
+ 	pendingSnapshot *Snapshot // 保存快照时使用
 
 	appendEntriesChan chan appendEntriesTuple
 	requestVoteChan   chan requestVoteTuple
 	commandChan       chan commandTuple
 	configurationChan chan configurationTuple
+	snapshotChan      chan snapshotTuple
 
 	electionTick <-chan time.Time
 	quit         chan chan struct{}
@@ -193,6 +200,11 @@ func NewServer(id uint64, store io.ReadWriter, a ApplyFunc) *Server {
 type configurationTuple struct {
 	Peers []Peer
 	Err   chan error
+}
+
+type snapshotTuple struct{
+	Snapshot *Snapshot
+	Err chan error
 }
 
 // SetConfiguration sets the peers that this server will attempt to communicate
@@ -296,6 +308,8 @@ func (s *Server) loop() {
 			s.candidateSelect()
 		case leader:
 			s.leaderSelect()
+		case snapshotting:
+			s.snapshotSelect()
 		default:
 			panic(fmt.Sprintf("unknown Server State '%s'", state))
 		}
@@ -439,6 +453,10 @@ func (s *Server) followerSelect() {
 				s.logGeneric("new leader unknown")
 				s.leader = unknownLeader
 			}
+
+		case t := <-s.snapshotChan:
+			fmt.Println(t.Snapshot) //todo
+
 		}
 	}
 }
@@ -564,6 +582,10 @@ func (s *Server) candidateSelect() {
 			return // draw
 		}
 	}
+}
+
+func (s *Server) snapshotSelect(){
+	//todo
 }
 
 //
@@ -1154,4 +1176,36 @@ func (s *Server) handleAppendEntries(r appendEntries) (appendEntriesResponse, bo
 		Term:    s.term,
 		Success: true,
 	}, stepDown
+}
+
+// 在服务器启动时加载快照信息
+func (s *Server) LoadSnaphot() error  {
+
+	/*
+	1、判断当前是否存在snaphot
+	2、找到最新的snapshot
+	3、校验snapshot并调用stateMachine的Recory方法
+	4、根据snapshot设置perr信息，重置index和term和commit index
+	 */
+	return nil
+}
+
+func (s *Server) TakeSnapshot() error{
+	/*
+	1、检查pending snapshot是否为空 ，上次snapshot保存后是否有commit 信息 todo ：start index 在哪些地方用到？
+	2、构建pending snapshot , 包括状态机信息 ，peer结点信息，不要忘记加入自己 ：) 以及要更新的index和term
+	3、调用saveSnapshot
+	4、压缩部分日志信息 todo
+	 */
+	return nil
+}
+
+func (s *Server) SaveSnapshot() error{
+	// 1、获取pending snapshot 2、 将pending snapshot保存至本地 ，pending snapshot 设为nil ，并设置该快照为当前快照 3、如果和之前保存的快照index 和 term 不同则，把之前的删掉
+	return nil
+}
+
+// 构建snapshot路径
+func (s *Server) SnapshotPath(lastIndex, lastTerm uint64) string{
+	return path.Join(string(s.id),"snapshot",fmt.Sprintf("%v_%v.snapshot",lastIndex,lastTerm));
 }

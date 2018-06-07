@@ -54,7 +54,7 @@ describes a complete network topology.
 * [net/rpc][netrpc] transport
 * Other transports?
 * ~~Configuration changes (joint-consensus mode)~~ _done_
-* Log compaction
+* Log compaction **in progress**
 * Robust demo application ☜ **in progress**
 * Complex unit tests (one per scenario described in the paper)
 

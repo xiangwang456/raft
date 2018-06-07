@@ -2,7 +2,7 @@ package raft
 
 import "io"
 
-type SnapHot struct {
+type Snapshot struct {
 	LastTerm  uint64 `json:"lastIndex"`
 	LastIndex uint64 `josn:"lastTerm"`
 
@@ -29,7 +29,7 @@ type SnaphotRequest struct {
 type SnaphotResponse struct {
 }
 
-func (ss *SnapHot) save() error {
+func (ss *Snapshot) save() error {
 	//todo : 1、打开文件 2、序列化protuuf  3、写入文件
 
 	var err error
@@ -38,7 +38,7 @@ func (ss *SnapHot) save() error {
 
 }
 
-func (ss *SnapHot) remove() error {
+func (ss *Snapshot) remove() error {
 	// todo : 1、将此文件移除
 	var err error
 
@@ -93,18 +93,18 @@ func (req *SnaphotRecoveryResponse) Decode(w io.Writer) (int, error) {
 	return 0, nil
 }
 
-func newSnapHotRecoryRequest(success bool) *SnaphotRecoveryRequest {
+func newSnapshotRecoryRequest(success bool) *SnaphotRecoveryRequest {
 	return &SnaphotRecoveryRequest{}
 }
 
-func newSnapHotRecoryResponse(success bool) *SnaphotRecoveryResponse {
+func newSnapshotRecoryResponse(success bool) *SnaphotRecoveryResponse {
 	return &SnaphotRecoveryResponse{Success: success}
 }
 
-func newSnapHotRequest(success bool) *SnaphotRequest {
+func newSnapshotRequest(success bool) *SnaphotRequest {
 	return &SnaphotRequest{}
 }
 
-func newSnapHotResponse(success bool) *SnaphotResponse {
+func newSnapshotResponse(success bool) *SnaphotResponse {
 	return &SnaphotResponse{}
 }
