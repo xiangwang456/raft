@@ -11,22 +11,22 @@ type Snapshot struct {
 	Path  string  `json:"path"`
 }
 
-// 服务器从 snaphot 状态启动
-type SnaphotRecoveryRequest struct {
+// 服务器从 Snapshot 状态启动
+type RequestSnapshotRecovery struct {
 	// todo :
 }
 
-//snaphot response
-type SnaphotRecoveryResponse struct {
+//Snapshot response
+type SnapshotRecoveryResponse struct {
 	Term        uint64
 	Success     bool
 	CommitIndex uint64
 }
 
-type SnaphotRequest struct {
+type RequestSnapshot struct {
 }
 
-type SnaphotResponse struct {
+type SnapshotResponse struct {
 }
 
 func (ss *Snapshot) save() error {
@@ -45,66 +45,66 @@ func (ss *Snapshot) remove() error {
 	return err
 }
 
-func (req *SnaphotRequest) Encode(w io.Writer) (int, error) {
+func (req *RequestSnapshot) Encode(w io.Writer) (int, error) {
 	// todo
 
 	return 0, nil
 }
 
-func (req *SnaphotRequest) Decode(w io.Writer) (int, error) {
+func (req *RequestSnapshot) Decode(w io.Writer) (int, error) {
 	//todo
 
 	return 0, nil
 }
 
-func (req *SnaphotResponse) Encode(w io.Writer) (int, error) {
+func (req *SnapshotResponse) Encode(w io.Writer) (int, error) {
 	// todo
 
 	return 0, nil
 }
 
-func (req *SnaphotResponse) Decode(w io.Writer) (int, error) {
+func (req *SnapshotResponse) Decode(w io.Writer) (int, error) {
 	//todo
 
 	return 0, nil
 }
 
-func (req *SnaphotRecoveryRequest) Encode(w io.Writer) (int, error) {
+func (req *RequestSnapshotRecovery) Encode(w io.Writer) (int, error) {
 	// todo
 
 	return 0, nil
 }
 
-func (req *SnaphotRecoveryRequest) Decode(w io.Writer) (int, error) {
+func (req *RequestSnapshotRecovery) Decode(w io.Writer) (int, error) {
 	//todo
 
 	return 0, nil
 }
 
-func (req *SnaphotRecoveryResponse) Encode(w io.Writer) (int, error) {
+func (req *SnapshotRecoveryResponse) Encode(w io.Writer) (int, error) {
 	// todo
 
 	return 0, nil
 }
 
-func (req *SnaphotRecoveryResponse) Decode(w io.Writer) (int, error) {
+func (req *SnapshotRecoveryResponse) Decode(w io.Writer) (int, error) {
 	//todo
 
 	return 0, nil
 }
 
-func newSnapshotRecoryRequest(success bool) *SnaphotRecoveryRequest {
-	return &SnaphotRecoveryRequest{}
+func newSnapshotRecoryRequest(success bool) *RequestSnapshotRecovery {
+	return &RequestSnapshotRecovery{}
 }
 
-func newSnapshotRecoryResponse(success bool) *SnaphotRecoveryResponse {
-	return &SnaphotRecoveryResponse{Success: success}
+func newSnapshotRecoryResponse(success bool) *SnapshotRecoveryResponse {
+	return &SnapshotRecoveryResponse{Success: success}
 }
 
-func newSnapshotRequest(success bool) *SnaphotRequest {
-	return &SnaphotRequest{}
+func newRequestSnapshot(success bool) *RequestSnapshot {
+	return &RequestSnapshot{}
 }
 
-func newSnapshotResponse(success bool) *SnaphotResponse {
-	return &SnaphotResponse{}
+func newSnapshotResponse(success bool) *SnapshotResponse {
+	return &SnapshotResponse{}
 }

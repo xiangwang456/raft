@@ -10,17 +10,16 @@ import (
 	"log"
 	"math"
 	"math/rand"
+	"path"
 	"sync"
 	"sync/atomic"
 	"time"
-	"os"
-	"path"
 )
 
 const (
-	follower  = "Follower"
-	candidate = "Candidate"
-	leader    = "Leader"
+	follower     = "Follower"
+	candidate    = "Candidate"
+	leader       = "Leader"
 	snapshotting = "snapshotting" // 增加快照角色
 )
 
@@ -125,23 +124,24 @@ func (s *protectedBool) Set(value bool) {
 // In a typical application, each running process that wants to be part of
 // the distributed state machine will contain a server component.
 type Server struct {
-	id      uint64 // id of this server
-	state   *protectedString
-	running *protectedBool
-	leader  uint64 // who we believe is the leader
-	term    uint64 // "current term number, which increases monotonically"
-	vote    uint64 // who we voted for this term, if applicable
-	log     *raftLog
-	config  *configuration
-	StateMachine *StateMachine
-	snapshot *Snapshot
- 	pendingSnapshot *Snapshot // 保存快照时使用
+	id              uint64 // id of this server
+	state           *protectedString
+	running         *protectedBool
+	leader          uint64 // who we believe is the leader
+	term            uint64 // "current term number, which increases monotonically"
+	vote            uint64 // who we voted for this term, if applicable
+	log             *raftLog
+	config          *configuration
+	StateMachine    *StateMachine
+	snapshot        *Snapshot
+	pendingSnapshot *Snapshot // 保存快照时使用
 
-	appendEntriesChan chan appendEntriesTuple
-	requestVoteChan   chan requestVoteTuple
-	commandChan       chan commandTuple
-	configurationChan chan configurationTuple
-	snapshotChan      chan snapshotTuple
+	appendEntriesChan           chan appendEntriesTuple
+	requestVoteChan             chan requestVoteTuple
+	commandChan                 chan commandTuple
+	configurationChan           chan configurationTuple
+	requestSnapshotChan         chan requestSnapshotTuple
+	requestSnapshotRecoveryChan chan requestSnapshotRecoveryTuple
 
 	electionTick <-chan time.Time
 	quit         chan chan struct{}
@@ -200,11 +200,6 @@ func NewServer(id uint64, store io.ReadWriter, a ApplyFunc) *Server {
 type configurationTuple struct {
 	Peers []Peer
 	Err   chan error
-}
-
-type snapshotTuple struct{
-	Snapshot *Snapshot
-	Err chan error
 }
 
 // SetConfiguration sets the peers that this server will attempt to communicate
@@ -454,11 +449,15 @@ func (s *Server) followerSelect() {
 				s.leader = unknownLeader
 			}
 
-		case t := <-s.snapshotChan:
-			fmt.Println(t.Snapshot) //todo
+		case t := <-s.requestSnapshotChan:
+			t.Response <- *s.handleSnapshotRequest(&t.Request) //todo
 
 		}
 	}
+}
+
+func (s *Server) handleSnapshotRequest(req *RequestSnapshot) *SnapshotResponse {
+	return newSnapshotResponse(true) //todo
 }
 
 func (s *Server) candidateSelect() {
@@ -584,8 +583,55 @@ func (s *Server) candidateSelect() {
 	}
 }
 
-func (s *Server) snapshotSelect(){
+func (s *Server) snapshotSelect() {
 	//todo
+	for {
+		select {
+		case q := <-s.quit:
+			s.handleQuit(q)
+			return
+
+		case t := <-s.commandChan:
+			s.forwardCommand(t)
+
+		case t := <-s.appendEntriesChan: //todo 检查handle函数
+			if s.leader == unknownLeader {
+				s.leader = t.Request.LeaderID
+				s.logGeneric("discovered Leader %d", s.leader)
+			}
+			resp, stepDown := s.handleAppendEntries(t.Request)
+			s.logAppendEntriesResponse(t.Request, resp, stepDown)
+			t.Response <- resp
+			if stepDown {
+				// stepDown as a Follower means just to reset the leader
+				if s.leader != unknownLeader {
+					s.logGeneric("abandoning old leader=%d", s.leader)
+				}
+				s.logGeneric("following new leader=%d", t.Request.LeaderID)
+				s.leader = t.Request.LeaderID
+			}
+
+		case t := <-s.requestVoteChan:
+			resp, stepDown := s.handleRequestVote(t.Request)
+			s.logRequestVoteResponse(t.Request, resp, stepDown) //
+			t.Response <- resp
+			if stepDown {
+				// stepDown as a Follower means just to reset the leader
+				if s.leader != unknownLeader {
+					s.logGeneric("abandoning old leader=%d", s.leader)
+				}
+				s.logGeneric("new leader unknown")
+				s.leader = unknownLeader
+			}
+
+		case <-s.configurationChan:
+			//todo
+
+		case t := <-s.requestSnapshotRecoveryChan:
+			t.Response <- *s.handleSnapshotRecovery(&t.Request) //todo
+
+		}
+	}
 }
 
 //
@@ -946,8 +992,16 @@ func (s *Server) leaderSelect() {
 				s.state.Set(follower)
 				return // deposed
 			}
+
+		case t := <-s.requestSnapshotRecoveryChan:
+			t.Response <- *s.handleSnapshotRecovery(&t.Request) // todo response就这样吗
+
 		}
 	}
+}
+
+func (s *Server) handleSnapshotRecovery(req *RequestSnapshotRecovery) *SnapshotRecoveryResponse {
+	return newSnapshotRecoryResponse(true) //todo
 }
 
 // handleRequestVote will modify s.term and s.vote, but nothing else.
@@ -1179,33 +1233,33 @@ func (s *Server) handleAppendEntries(r appendEntries) (appendEntriesResponse, bo
 }
 
 // 在服务器启动时加载快照信息
-func (s *Server) LoadSnaphot() error  {
+func (s *Server) LoadSnaphot() error {
 
 	/*
-	1、判断当前是否存在snaphot
-	2、找到最新的snapshot
-	3、校验snapshot并调用stateMachine的Recory方法
-	4、根据snapshot设置perr信息，重置index和term和commit index
-	 */
+		1、判断当前是否存在snaphot
+		2、找到最新的snapshot
+		3、校验snapshot并调用stateMachine的Recory方法
+		4、根据snapshot设置perr信息，重置index和term和commit index
+	*/
 	return nil
 }
 
-func (s *Server) TakeSnapshot() error{
+func (s *Server) TakeSnapshot() error {
 	/*
-	1、检查pending snapshot是否为空 ，上次snapshot保存后是否有commit 信息 todo ：start index 在哪些地方用到？
-	2、构建pending snapshot , 包括状态机信息 ，peer结点信息，不要忘记加入自己 ：) 以及要更新的index和term
-	3、调用saveSnapshot
-	4、压缩部分日志信息 todo
-	 */
+		1、检查pending snapshot是否为空 ，上次snapshot保存后是否有commit 信息 todo ：start index 在哪些地方用到？
+		2、构建pending snapshot , 包括状态机信息 ，peer结点信息，不要忘记加入自己 ：) 以及要更新的index和term
+		3、调用saveSnapshot
+		4、压缩部分日志信息 todo
+	*/
 	return nil
 }
 
-func (s *Server) SaveSnapshot() error{
+func (s *Server) SaveSnapshot() error {
 	// 1、获取pending snapshot 2、 将pending snapshot保存至本地 ，pending snapshot 设为nil ，并设置该快照为当前快照 3、如果和之前保存的快照index 和 term 不同则，把之前的删掉
 	return nil
 }
 
 // 构建snapshot路径
-func (s *Server) SnapshotPath(lastIndex, lastTerm uint64) string{
-	return path.Join(string(s.id),"snapshot",fmt.Sprintf("%v_%v.snapshot",lastIndex,lastTerm));
+func (s *Server) SnapshotPath(lastIndex, lastTerm uint64) string {
+	return path.Join(string(s.id), "snapshot", fmt.Sprintf("%v_%v.snapshot", lastIndex, lastTerm))
 }

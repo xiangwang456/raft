@@ -10,6 +10,16 @@ type requestVoteTuple struct {
 	Response chan requestVoteResponse
 }
 
+type requestSnapshotTuple struct {
+	Request  RequestSnapshot
+	Response chan SnapshotResponse
+}
+
+type requestSnapshotRecoveryTuple struct {
+	Request  RequestSnapshotRecovery
+	Response chan SnapshotRecoveryResponse
+}
+
 // appendEntries represents an appendEntries RPC.
 type appendEntries struct {
 	Term         uint64     `json:"term"`
