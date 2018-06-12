@@ -22,10 +22,11 @@ var (
 
 type raftLog struct {
 	sync.RWMutex
-	store     io.Writer
-	entries   []logEntry
-	commitPos int
-	apply     func(uint64, []byte) []byte
+	store      io.Writer
+	entries    []logEntry
+	commitPos  uint64
+	startIndex uint64 //todo start index的更新
+	apply      func(uint64, []byte) []byte
 }
 
 func newRaftLog(store io.ReadWriter, apply func(uint64, []byte) []byte) *raftLog {
@@ -106,6 +107,19 @@ func stripResponseChannels(a []logEntry) []logEntry {
 	return stripped
 }
 
+func (l *raftLog) compact(index uint64, term uint64) error {
+	l.RLock()
+	defer l.RLock()
+	// todo 0613
+
+	if index == 0 {
+		return nil
+	}
+
+	return nil
+
+}
+
 // contains returns true if a log entry with the given index and term exists in
 // the log.
 func (l *raftLog) contains(index, term uint64) bool {
@@ -184,7 +198,7 @@ func (l *raftLog) ensureLastIs(index, term uint64) error {
 	}
 
 	// Sanity check.
-	if pos < l.commitPos {
+	if pos < int(l.commitPos) {
 		panic("index >= commitIndex, but pos < commitPos")
 	}
 
@@ -225,14 +239,19 @@ func (l *raftLog) getCommitIndex() uint64 {
 	return l.getCommitIndexWithLock()
 }
 
+
 func (l *raftLog) getCommitIndexWithLock() uint64 {
 	if l.commitPos < 0 {
 		return 0
 	}
-	if l.commitPos >= len(l.entries) {
+	if int(l.commitPos) >= len(l.entries) {
 		panic(fmt.Sprintf("commitPos %d > len(l.entries) %d; bad bookkeeping in raftLog", l.commitPos, len(l.entries)))
 	}
 	return l.entries[l.commitPos].Index
+}
+
+func (l *raftLog) getEntry(index uint64) logEntry {
+	return logEntry{} //todo
 }
 
 // lastIndex returns the index of the most recent log entry.
@@ -322,7 +341,7 @@ func (l *raftLog) commitTo(commitIndex uint64) error {
 	// Remember to include the passed index.
 	for {
 		// Sanity checks. TODO replace with plain `for` when this is stable.
-		if pos >= len(l.entries) {
+		if int(pos) >= len(l.entries) {
 			panic(fmt.Sprintf("commitTo pos=%d advanced past all log entries (%d)", pos, len(l.entries)))
 		}
 		if l.entries[pos].Index > commitIndex {

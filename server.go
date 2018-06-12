@@ -26,6 +26,7 @@ const (
 const (
 	unknownLeader = 0
 	noVote        = 0
+
 )
 
 var (
@@ -36,6 +37,10 @@ var (
 	MinimumElectionTimeoutMS int32 = 250
 
 	maximumElectionTimeoutMS = 2 * MinimumElectionTimeoutMS
+
+	NumberOfLogEntriesAfterSnapshot uint64 = 200
+
+
 )
 
 var (
@@ -46,6 +51,9 @@ var (
 	errReplicationFailed     = errors.New("command replication failed (but will keep retrying)")
 	errOutOfSync             = errors.New("out of sync")
 	errAlreadyRunning        = errors.New("already running")
+	errPendingSnapNil        = errors.New("pending snapshot is nil")
+	errMissingStateMachien   = errors.New("Snapshot : Cannot create snapshot , missing state machine")
+	errSnapshotUnfinshed     = errors.New("Snapshot : last snapshot is not finished")
 )
 
 // resetElectionTimeoutMS sets the minimum and maximum election timeouts to the
@@ -132,7 +140,7 @@ type Server struct {
 	vote            uint64 // who we voted for this term, if applicable
 	log             *raftLog
 	config          *configuration
-	StateMachine    *StateMachine
+	stateMachine    *StateMachine
 	snapshot        *Snapshot
 	pendingSnapshot *Snapshot // 保存快照时使用
 
@@ -457,7 +465,16 @@ func (s *Server) followerSelect() {
 }
 
 func (s *Server) handleSnapshotRequest(req *RequestSnapshot) *SnapshotResponse {
-	return newSnapshotResponse(true) //todo
+	//如果follower的日志中包含了snapshot的 last index和term 则说明follower已经包含了snapshot的信息，返回flase
+
+	exist := s.log.contains(req.LastIndex, req.LastTerm);
+	if exist {
+		return newSnapshotResponse(false)
+	}
+
+	s.state.Set(snapshotting) // todo : 何时返回follower状态
+
+	return newSnapshotResponse(true)
 }
 
 func (s *Server) candidateSelect() {
@@ -584,7 +601,7 @@ func (s *Server) candidateSelect() {
 }
 
 func (s *Server) snapshotSelect() {
-	//todo
+
 	for {
 		select {
 		case q := <-s.quit:
@@ -592,7 +609,7 @@ func (s *Server) snapshotSelect() {
 			return
 
 		case t := <-s.commandChan:
-			s.forwardCommand(t)
+			s.forwardCommand(t) //todo 检查forwrard函数
 
 		case t := <-s.appendEntriesChan: //todo 检查handle函数
 			if s.leader == unknownLeader {
@@ -611,6 +628,9 @@ func (s *Server) snapshotSelect() {
 				s.leader = t.Request.LeaderID
 			}
 
+		case t := <-s.configurationChan:
+			s.forwardConfiguration(t) //todo check
+
 		case t := <-s.requestVoteChan:
 			resp, stepDown := s.handleRequestVote(t.Request)
 			s.logRequestVoteResponse(t.Request, resp, stepDown) //
@@ -624,11 +644,8 @@ func (s *Server) snapshotSelect() {
 				s.leader = unknownLeader
 			}
 
-		case <-s.configurationChan:
-			//todo
-
 		case t := <-s.requestSnapshotRecoveryChan:
-			t.Response <- *s.handleSnapshotRecovery(&t.Request) //todo
+			t.Response <- s.handleSnapshotRecovery(t.Request)
 
 		}
 	}
@@ -993,15 +1010,31 @@ func (s *Server) leaderSelect() {
 				return // deposed
 			}
 
-		case t := <-s.requestSnapshotRecoveryChan:
-			t.Response <- *s.handleSnapshotRecovery(&t.Request) // todo response就这样吗
 
 		}
 	}
 }
 
-func (s *Server) handleSnapshotRecovery(req *RequestSnapshotRecovery) *SnapshotRecoveryResponse {
-	return newSnapshotRecoryResponse(true) //todo
+func (s *Server) handleSnapshotRecovery(req RequestSnapshotRecovery) SnapshotRecoveryResponse {
+	//1、从requset中恢复 2、恢复集群中的配置信息 3、恢复日志 4、创建本地snapshot 5、清除之前的日志
+
+	err := (*s.stateMachine).Recovery(req.State);
+	if err != nil {
+		panic("cannot recover from request state")
+	}
+
+	s.config = &req.Config
+
+	s.term = req.LastTerm
+	s.log.commitPos = req.LastIndex //todo 日志信息不用恢复吗 ，日志和state machine有什么关系
+
+	s.pendingSnapshot = &Snapshot{
+		req.LastTerm, req.LastIndex, req.Config, req.State, s.SnapshotPath(req.LastIndex, req.LastTerm)}
+	s.SaveSnapshot()
+
+	s.log.compact(req.LastIndex, req.LastTerm) // todo 0613 日志压缩
+
+	return newSnapshotRecoryResponse(req.LastTerm, true, req.LastIndex)
 }
 
 // handleRequestVote will modify s.term and s.vote, but nothing else.
@@ -1241,25 +1274,81 @@ func (s *Server) LoadSnaphot() error {
 		3、校验snapshot并调用stateMachine的Recory方法
 		4、根据snapshot设置perr信息，重置index和term和commit index
 	*/
+
+	//dir,err := os.OpenFile(path.Join(s.pa))
 	return nil
 }
 
 func (s *Server) TakeSnapshot() error {
 	/*
-		1、检查pending snapshot是否为空 ，上次snapshot保存后是否有commit 信息 todo ：start index 在哪些地方用到？
+		1、检查pending snapshot是否为空 ，上次snapshot保存后是否有commit 信息
 		2、构建pending snapshot , 包括状态机信息 ，peer结点信息，不要忘记加入自己 ：) 以及要更新的index和term
 		3、调用saveSnapshot
-		4、压缩部分日志信息 todo
+		4、压缩部分日志信息
 	*/
+
+	if s.stateMachine == nil {
+		return errMissingStateMachien
+	}
+
+	if s.pendingSnapshot != nil {
+		return errSnapshotUnfinshed
+	}
+
+	lastIndex := s.log.commitPos
+	if lastIndex == s.log.startIndex {
+		return nil
+	}
+
+	path := s.SnapshotPath(lastIndex, s.term)
+	s.pendingSnapshot = &Snapshot{s.term, lastIndex, nil, nil, path}
+
+	state, err := (*s.stateMachine).Save();
+	if err != nil {
+		return err
+	}
+
+	s.pendingSnapshot.State = state
+	s.pendingSnapshot.config = *s.config
+
+	s.SaveSnapshot()
+
+	// 为什么不全部压缩 ？  todo
+	// We keep some log entries after the snapshot.
+	// We do not want to send the whole snapshot to the slightly slow machines
+	if lastIndex-s.log.startIndex > NumberOfLogEntriesAfterSnapshot {
+		compactIndex := lastIndex - s.log.startIndex
+		compactTerm := s.log.getEntry(compactIndex).Term
+		s.log.compact(compactIndex, compactTerm)
+	}
+
 	return nil
 }
 
 func (s *Server) SaveSnapshot() error {
-	// 1、获取pending snapshot 2、 将pending snapshot保存至本地 ，pending snapshot 设为nil ，并设置该快照为当前快照 3、如果和之前保存的快照index 和 term 不同则，把之前的删掉
+	//1、获取pending snapshot
+	//2、 将pending snapshot保存至本地 ，pending snapshot 设为nil ，并设置该快照为当前快照
+	//3、如果和之前保存的快照index 和 term 不同,则把之前的删掉
+
+	if s.pendingSnapshot == nil {
+		return errPendingSnapNil;
+	}
+
+	err := s.pendingSnapshot.save();
+	if err != nil {
+		return err
+	}
+
+	tmp := s.snapshot
+	s.snapshot = s.pendingSnapshot
+
+	if tmp != nil && !(tmp.LastIndex == s.snapshot.LastIndex && tmp.LastTerm != s.snapshot.LastTerm) {
+		tmp.remove()
+	}
 	return nil
 }
 
 // 构建snapshot路径
-func (s *Server) SnapshotPath(lastIndex, lastTerm uint64) string {
+func (s *Server) SnapshotPath(lastIndex uint64, lastTerm uint64) string {
 	return path.Join(string(s.id), "snapshot", fmt.Sprintf("%v_%v.snapshot", lastIndex, lastTerm))
 }

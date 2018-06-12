@@ -6,24 +6,31 @@ type Snapshot struct {
 	LastTerm  uint64 `json:"lastIndex"`
 	LastIndex uint64 `josn:"lastTerm"`
 
-	Peers []*Peer `json:"peers"`
-	State []byte  `json:"state"`
-	Path  string  `json:"path"`
+	config configuration `json:"configuration"`
+	State  []byte        `json:"state"`
+	Path   string        `json:"path"`
 }
 
 // 服务器从 Snapshot 状态启动
 type RequestSnapshotRecovery struct {
-	// todo :
+	LeaderName string
+	LastIndex  uint64
+	LastTerm   uint64
+	Config     configuration
+	State      []byte
 }
 
 //Snapshot response
 type SnapshotRecoveryResponse struct {
 	Term        uint64
 	Success     bool
-	CommitIndex uint64
+	CommitIndex int
 }
 
 type RequestSnapshot struct {
+	LeaderName string
+	LastIndex  uint64
+	LastTerm   uint64
 }
 
 type SnapshotResponse struct {
@@ -97,8 +104,8 @@ func newSnapshotRecoryRequest(success bool) *RequestSnapshotRecovery {
 	return &RequestSnapshotRecovery{}
 }
 
-func newSnapshotRecoryResponse(success bool) *SnapshotRecoveryResponse {
-	return &SnapshotRecoveryResponse{Success: success}
+func newSnapshotRecoryResponse(term uint64, success bool, commitIndex uint64) SnapshotRecoveryResponse {
+	return SnapshotRecoveryResponse{Success: success}
 }
 
 func newRequestSnapshot(success bool) *RequestSnapshot {
