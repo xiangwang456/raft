@@ -8,6 +8,7 @@ import (
 	"io"
 	"sync"
 	"time"
+	"os"
 )
 
 var (
@@ -22,12 +23,13 @@ var (
 
 type raftLog struct {
 	sync.RWMutex
-	store      io.Writer
+	store      *os.File
 	entries    []logEntry
 	commitPos  uint64
 	startIndex uint64 //todo start index的更新
 	startTerm  uint64
 	apply      func(uint64, []byte) []byte
+	path       string
 }
 
 func newRaftLog(store io.ReadWriter, apply func(uint64, []byte) []byte) *raftLog {
@@ -109,15 +111,57 @@ func stripResponseChannels(a []logEntry) []logEntry {
 }
 
 func (l *raftLog) compact(index uint64, term uint64) error {
+	//1、找出需要压缩的日志 2、创建压缩文件 3、将信息写入文件 4、重置内存中的日志信息
+
 	l.RLock()
 	defer l.RLock()
-	// todo 0613
 
-	if index == 0 {
+	//1、找到需要压缩的日志
+	if index == 0 || index > l.lastIndex() {
 		return nil
 	}
 
+	entries := l.entries[l.startIndex :]
+
+	//2、创建压缩文件
+	newFilePah := l.path + `.new`
+	file, err := os.OpenFile(newFilePah, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600); if err != nil{ //todo what mean
+		return err
+	}
+
+	//3、写入文件
+	for _, entry := range entries {
+		position, _ := l.store.Seek(0,0) //todo right ?
+		entry.position = uint64(position)
+
+		if  err = entry.encode(file); err != nil {
+			file.Close()
+			os.Remove(newFilePah)
+			return err
+		}
+	}
+
+	file.Sync()
+
+	// 4、更新日志里的信息
+	old_file := l.store
+
+	// 重命名
+	err = os.Rename(newFilePah, l.path);if err != nil {
+		file.Close()
+		os.Remove(newFilePah)
+		return err
+	}
+	l.store = file
+
+	old_file.Close()
+
+	// 修改内存里的日志
+	l.entries = entries
+	l.startIndex = index
+	l.startTerm = term
 	return nil
+
 
 }
 
@@ -407,6 +451,7 @@ func (l *raftLog) commitTo(commitIndex uint64) error {
 // executed against the node state machine when the log entry is successfully
 // replicated.
 type logEntry struct {
+	position        uint64     // 文件位置  todo 改成Protob
 	Index           uint64        `json:"index"`
 	Term            uint64        `json:"term"` // when received by leader
 	Command         []byte        `json:"command,omitempty"`
@@ -426,6 +471,7 @@ type logEntry struct {
 //		 ---------------------------------------------
 // 4位crc校验 8位term 8位index 4位大小字段 ，小端模式
 func (e *logEntry) encode(w io.Writer) error {
+	// 考虑换成 proto todo
 	if len(e.Command) <= 0 {
 		return errNoCommand
 	}
