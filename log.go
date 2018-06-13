@@ -26,6 +26,7 @@ type raftLog struct {
 	entries    []logEntry
 	commitPos  uint64
 	startIndex uint64 //todo start index的更新
+	startTerm  uint64
 	apply      func(uint64, []byte) []byte
 }
 

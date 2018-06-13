@@ -14,6 +14,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"os"
+	"sort"
+	"io/ioutil"
+	"hash/crc32"
+	"encoding/json"
 )
 
 const (
@@ -54,6 +59,7 @@ var (
 	errPendingSnapNil        = errors.New("pending snapshot is nil")
 	errMissingStateMachien   = errors.New("Snapshot : Cannot create snapshot , missing state machine")
 	errSnapshotUnfinshed     = errors.New("Snapshot : last snapshot is not finished")
+	errBadSnapshot			 = errors.New("Bad Snapshot Files")
 )
 
 // resetElectionTimeoutMS sets the minimum and maximum election timeouts to the
@@ -133,6 +139,7 @@ func (s *protectedBool) Set(value bool) {
 // the distributed state machine will contain a server component.
 type Server struct {
 	id              uint64 // id of this server
+	path		    string  //
 	state           *protectedString
 	running         *protectedBool
 	leader          uint64 // who we believe is the leader
@@ -1275,7 +1282,66 @@ func (s *Server) LoadSnaphot() error {
 		4、根据snapshot设置perr信息，重置index和term和commit index
 	*/
 
-	//dir,err := os.OpenFile(path.Join(s.pa))
+	dir,err := os.OpenFile(path.Join(s.path),os.O_RDONLY,0)
+	if err != nil{
+		fmt.Println("can not open snapshot directory")
+		return err
+	}
+
+	snapshotNames,err := dir.Readdirnames(-1); if err != nil{
+		dir.Close()
+		panic("open dir failed")
+	}
+
+	sort.Strings(snapshotNames)
+
+	// 获取最新的snapshot
+	snapshotPath := path.Join(s.path,snapshotNames[len(snapshotNames) - 1])
+
+	dir.Close()
+
+	snapshotFile,err := os.OpenFile(snapshotPath,os.O_RDONLY,0);if err != nil{
+		fmt.Println("can not open snapshot file")
+		return err
+	}
+	defer snapshotFile.Close()
+
+	//校验snapshot 文件
+	var checkSum uint32
+	n,err := fmt.Fprintf(snapshotFile,"%08x\n",&checkSum)
+	if n != 1 {
+		return err
+	}else {
+		return errBadSnapshot
+	}
+
+	b,err := ioutil.ReadAll(snapshotFile); if err != nil{
+		fmt.Println("read snapshot file error")
+		return err
+	}
+
+	byteChecksum := crc32.ChecksumIEEE(b)
+
+	if checkSum != byteChecksum {
+		return errBadSnapshot
+	}
+
+	//恢复snapshot todo 从proto buffer恢复 ，不再从json
+	err = json.Unmarshal(b,&s.snapshot); if err != nil {
+		return err
+	}
+
+	 err = (*s.stateMachine).Recovery(b); if err != nil{
+	 	return err
+	}
+
+	s.log.startIndex = s.snapshot.LastIndex
+	s.log.startTerm = s.snapshot.LastTerm // todo startTerm 查看哪里使用过
+	s.log.commitPos = s.snapshot.LastIndex
+
+	s.config = &s.snapshot.config
+
+
 	return nil
 }
 
