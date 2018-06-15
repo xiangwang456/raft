@@ -4,21 +4,21 @@ package raft
 import (
 	"bytes"
 	"encoding/gob"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"hash/crc32"
+	"io/ioutil"
 	"log"
 	"math"
 	"math/rand"
+	"os"
 	"path"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
-	"os"
-	"sort"
-	"io/ioutil"
-	"hash/crc32"
-	"encoding/json"
+	"io"
 )
 
 const (
@@ -31,7 +31,6 @@ const (
 const (
 	unknownLeader = 0
 	noVote        = 0
-
 )
 
 var (
@@ -44,8 +43,6 @@ var (
 	maximumElectionTimeoutMS = 2 * MinimumElectionTimeoutMS
 
 	NumberOfLogEntriesAfterSnapshot uint64 = 200
-
-
 )
 
 var (
@@ -59,7 +56,7 @@ var (
 	errPendingSnapNil        = errors.New("pending snapshot is nil")
 	errMissingStateMachien   = errors.New("Snapshot : Cannot create snapshot , missing state machine")
 	errSnapshotUnfinshed     = errors.New("Snapshot : last snapshot is not finished")
-	errBadSnapshot			 = errors.New("Bad Snapshot Files")
+	errBadSnapshot           = errors.New("Bad Snapshot Files")
 )
 
 // resetElectionTimeoutMS sets the minimum and maximum election timeouts to the
@@ -139,7 +136,7 @@ func (s *protectedBool) Set(value bool) {
 // the distributed state machine will contain a server component.
 type Server struct {
 	id              uint64 // id of this server
-	path		    string  //
+	path            string //
 	state           *protectedString
 	running         *protectedBool
 	leader          uint64 // who we believe is the leader
@@ -181,7 +178,7 @@ type ApplyFunc func(commitIndex uint64, cmd []byte) []byte
 //
 // NewServer creates a server, but you'll need to couple it with a transport to
 // make it usable. See the example(s) for usage scenarios.
-func NewServer(id uint64, store io.ReadWriter, a ApplyFunc) *Server {
+func NewServer(id uint64, store *os.File, a ApplyFunc) *Server {
 	if id <= 0 {
 		panic("server id must be > 0")
 	}
@@ -204,6 +201,7 @@ func NewServer(id uint64, store io.ReadWriter, a ApplyFunc) *Server {
 		requestVoteChan:   make(chan requestVoteTuple),
 		commandChan:       make(chan commandTuple),
 		configurationChan: make(chan configurationTuple),
+		//todo 增加内容
 
 		electionTick: nil,
 		quit:         make(chan chan struct{}),
@@ -240,8 +238,35 @@ func (s *Server) SetConfiguration(peers ...Peer) error {
 	return <-err
 }
 
+func (s *Server) Init() error {
+
+	// 创建 snapshot 文件夹
+	err := os.Mkdir(path.Join(s.path, "snapshot"), 0700)
+	if err != nil && !os.IsExist(err) {
+		return fmt.Errorf("raft: Initialization error: %s", err)
+	}
+
+	//读取配置文件
+	//if err := s.(); err != nil {
+	//	//读取文件，没有则创建文件，如果有就恢复文件
+	//	fmt.Errorf("raft: Initialization error: %s", err)
+	//}
+
+
+	// Update the term to the last term in the log.
+	//_, s.currentTerm = s.log.lastInfo()
+
+	return nil
+}
+
+
+
+
 // Start triggers the server to begin communicating with its peers.
 func (s *Server) Start() {
+	if err := s.Init(); err != nil {
+		panic("Initilalization error " )
+	}
 	go s.loop()
 }
 
@@ -474,7 +499,7 @@ func (s *Server) followerSelect() {
 func (s *Server) handleSnapshotRequest(req *RequestSnapshot) *SnapshotResponse {
 	//如果follower的日志中包含了snapshot的 last index和term 则说明follower已经包含了snapshot的信息，返回flase
 
-	exist := s.log.contains(req.LastIndex, req.LastTerm);
+	exist := s.log.contains(req.LastIndex, req.LastTerm)
 	if exist {
 		return newSnapshotResponse(false)
 	}
@@ -1017,7 +1042,6 @@ func (s *Server) leaderSelect() {
 				return // deposed
 			}
 
-
 		}
 	}
 }
@@ -1025,7 +1049,7 @@ func (s *Server) leaderSelect() {
 func (s *Server) handleSnapshotRecovery(req RequestSnapshotRecovery) SnapshotRecoveryResponse {
 	//1、从requset中恢复 2、恢复集群中的配置信息 3、恢复日志 4、创建本地snapshot 5、清除之前的日志
 
-	err := (*s.stateMachine).Recovery(req.State);
+	err := (*s.stateMachine).Recovery(req.State)
 	if err != nil {
 		panic("cannot recover from request state")
 	}
@@ -1282,13 +1306,14 @@ func (s *Server) LoadSnaphot() error {
 		4、根据snapshot设置perr信息，重置index和term和commit index
 	*/
 
-	dir,err := os.OpenFile(path.Join(s.path),os.O_RDONLY,0)
-	if err != nil{
+	dir, err := os.OpenFile(path.Join(s.path), os.O_RDONLY, 0)
+	if err != nil {
 		fmt.Println("can not open snapshot directory")
 		return err
 	}
 
-	snapshotNames,err := dir.Readdirnames(-1); if err != nil{
+	snapshotNames, err := dir.Readdirnames(-1)
+	if err != nil {
 		dir.Close()
 		panic("open dir failed")
 	}
@@ -1296,11 +1321,12 @@ func (s *Server) LoadSnaphot() error {
 	sort.Strings(snapshotNames)
 
 	// 获取最新的snapshot
-	snapshotPath := path.Join(s.path,snapshotNames[len(snapshotNames) - 1])
+	snapshotPath := path.Join(s.path, snapshotNames[len(snapshotNames)-1])
 
 	dir.Close()
 
-	snapshotFile,err := os.OpenFile(snapshotPath,os.O_RDONLY,0);if err != nil{
+	snapshotFile, err := os.OpenFile(snapshotPath, os.O_RDONLY, 0)
+	if err != nil {
 		fmt.Println("can not open snapshot file")
 		return err
 	}
@@ -1308,14 +1334,15 @@ func (s *Server) LoadSnaphot() error {
 
 	//校验snapshot 文件
 	var checkSum uint32
-	n,err := fmt.Fprintf(snapshotFile,"%08x\n",&checkSum)
+	n, err := fmt.Fprintf(snapshotFile, "%08x\n", &checkSum)
 	if n != 1 {
 		return err
-	}else {
+	} else {
 		return errBadSnapshot
 	}
 
-	b,err := ioutil.ReadAll(snapshotFile); if err != nil{
+	b, err := ioutil.ReadAll(snapshotFile)
+	if err != nil {
 		fmt.Println("read snapshot file error")
 		return err
 	}
@@ -1327,12 +1354,14 @@ func (s *Server) LoadSnaphot() error {
 	}
 
 	//恢复snapshot todo 从proto buffer恢复 ，不再从json
-	err = json.Unmarshal(b,&s.snapshot); if err != nil {
+	err = json.Unmarshal(b, &s.snapshot)
+	if err != nil {
 		return err
 	}
 
-	 err = (*s.stateMachine).Recovery(b); if err != nil{
-	 	return err
+	err = (*s.stateMachine).Recovery(b)
+	if err != nil {
+		return err
 	}
 
 	s.log.startIndex = s.snapshot.LastIndex
@@ -1340,7 +1369,6 @@ func (s *Server) LoadSnaphot() error {
 	s.log.commitPos = s.snapshot.LastIndex
 
 	s.config = &s.snapshot.config
-
 
 	return nil
 }
@@ -1369,7 +1397,7 @@ func (s *Server) TakeSnapshot() error {
 	path := s.SnapshotPath(lastIndex, s.term)
 	s.pendingSnapshot = &Snapshot{s.term, lastIndex, nil, nil, path}
 
-	state, err := (*s.stateMachine).Save();
+	state, err := (*s.stateMachine).Save()
 	if err != nil {
 		return err
 	}
@@ -1397,10 +1425,10 @@ func (s *Server) SaveSnapshot() error {
 	//3、如果和之前保存的快照index 和 term 不同,则把之前的删掉
 
 	if s.pendingSnapshot == nil {
-		return errPendingSnapNil;
+		return errPendingSnapNil
 	}
 
-	err := s.pendingSnapshot.save();
+	err := s.pendingSnapshot.save()
 	if err != nil {
 		return err
 	}

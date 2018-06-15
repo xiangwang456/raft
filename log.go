@@ -6,9 +6,14 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"os"
 	"sync"
 	"time"
-	"os"
+	"github.com/golang/protobuf/proto"
+	"github.com/zoo-keeper/raft/protobuf"
+	"bytes"
+	"encoding/json"
+	"path"
 )
 
 var (
@@ -23,45 +28,81 @@ var (
 
 type raftLog struct {
 	sync.RWMutex
-	store      *os.File
+	file      *os.File
 	entries    []logEntry
 	commitPos  uint64
 	startIndex uint64 //todo start index的更新
-	startTerm  uint64
+	startTerm  uint64 // todo start  item 的更新
 	apply      func(uint64, []byte) []byte
 	path       string
 }
 
-func newRaftLog(store io.ReadWriter, apply func(uint64, []byte) []byte) *raftLog {
+func newRaftLog(store *os.File, apply func(uint64, []byte) []byte) *raftLog {
+
+	// 如果有文件 ，则从文件恢复，否则创建新的config
 	l := &raftLog{
 		store:     store,
 		entries:   []logEntry{},
-		commitPos: -1, // no commits to begin with
+		commitPos: 0, // no commits to begin with
 		apply:     apply,
 	}
 	l.recover(store)
 	return l
 }
 
-// recover reads from the log's store, to populate the log with log entries
-// from persistent storage. It should be called once, at log instantiation.
-func (l *raftLog) recover(r io.Reader) error {
-	for {
-		var entry logEntry
-		switch err := entry.decode(r); err {
-		case io.EOF:
-			return nil // successful completion
-		case nil:
-			if err := l.appendEntry(entry); err != nil {
-				return err
-			}
-			l.commitPos++
-			l.apply(entry.Index, entry.Command)
-		default:
-			return err // unsuccessful completion
+
+func (l *raftLog) open(path string) error{
+	// 从日志中读取
+	var readBytes int64
+
+	var err error
+
+	l.file, err = os.OpenFile(path, os.O_RDWR, 0600)
+	l.path = path
+
+	if err != nil {
+
+		if os.IsNotExist(err) {
+			l.file, err = os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0600)
 		}
+		return err
 	}
+
+
+	for { //todo
+		// Instantiate log entry and decode into it.
+		entry, _ := newLogEntry(l, 0, 0, nil)
+		entry.Position, _ = l.file.Seek(0, os.SEEK_CUR)
+
+		//n, err := entry.decode(l.file)
+		//if err != nil {
+		//	if err == io.EOF {
+		//		debugln("open.log.append: finish ")
+		//	} else {
+		//		if err = os.Truncate(path, readBytes); err != nil {
+		//			return fmt.Errorf("raft.Log: Unable to recover: %v", err)
+		//		}
+		//	}
+		//	break
+		//}
+		//if entry.Index() > l.startIndex {
+		//	// Append entry.
+		//	l.entries = append(l.entries, entry)
+		//	if entry.Index() <= l.commitIndex {
+		//		command, err := newCommand(entry.CommandName(), entry.Command())
+		//		if err != nil {
+		//			continue
+		//		}
+		//		l.ApplyFunc(entry, command)
+		//	}
+
+		}
+
+		readBytes += int64(0)
+
+	return nil
 }
+
 
 // entriesAfter returns a slice of log entries after (i.e. not including) the
 // passed index, and the term of the log entry specified by index, as a
@@ -121,20 +162,21 @@ func (l *raftLog) compact(index uint64, term uint64) error {
 		return nil
 	}
 
-	entries := l.entries[l.startIndex :]
+	entries := l.entries[l.startIndex:]
 
 	//2、创建压缩文件
 	newFilePah := l.path + `.new`
-	file, err := os.OpenFile(newFilePah, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600); if err != nil{ //todo what mean
+	file, err := os.OpenFile(newFilePah, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil { //todo what mean
 		return err
 	}
 
 	//3、写入文件
 	for _, entry := range entries {
-		position, _ := l.store.Seek(0,0) //todo right ?
-		entry.position = uint64(position)
+		//position, _ := l.store.Seek(0,0) //todo right ?
+		//entry.position = uint64(position)
 
-		if  err = entry.encode(file); err != nil {
+		if err = entry.encode(file); err != nil {
 			file.Close()
 			os.Remove(newFilePah)
 			return err
@@ -147,7 +189,8 @@ func (l *raftLog) compact(index uint64, term uint64) error {
 	old_file := l.store
 
 	// 重命名
-	err = os.Rename(newFilePah, l.path);if err != nil {
+	err = os.Rename(newFilePah, l.path)
+	if err != nil {
 		file.Close()
 		os.Remove(newFilePah)
 		return err
@@ -161,7 +204,6 @@ func (l *raftLog) compact(index uint64, term uint64) error {
 	l.startIndex = index
 	l.startTerm = term
 	return nil
-
 
 }
 
@@ -283,7 +325,6 @@ func (l *raftLog) getCommitIndex() uint64 {
 	defer l.RUnlock()
 	return l.getCommitIndexWithLock()
 }
-
 
 func (l *raftLog) getCommitIndexWithLock() uint64 {
 	if l.commitPos < 0 {
@@ -451,83 +492,66 @@ func (l *raftLog) commitTo(commitIndex uint64) error {
 // executed against the node state machine when the log entry is successfully
 // replicated.
 type logEntry struct {
-	position        uint64     // 文件位置  todo 改成Protob
-	Index           uint64        `json:"index"`
-	Term            uint64        `json:"term"` // when received by leader
-	Command         []byte        `json:"command,omitempty"`
-	committed       chan bool     `json:"-"`
-	commandResponse chan<- []byte `json:"-"` // only non-nil on receiver's log
-	isConfiguration bool          `json:"-"` // for configuration change entries
+	pb       *protobuf.LogEntry
+	Position int64 // 文件中的位置
+	log      *raftLog
+
+
 }
 
-// encode serializes the log entry to the passed io.Writer.
-//
-// Entries are serialized in a simple binary format:
-//
-//		 ---------------------------------------------
-//		| uint32 | uint64 | uint64 | uint32 | []byte  |
-//		 ---------------------------------------------
-//		| CRC    | TERM   | INDEX  | SIZE   | COMMAND |
-//		 ---------------------------------------------
-// 4位crc校验 8位term 8位index 4位大小字段 ，小端模式
-func (e *logEntry) encode(w io.Writer) error {
-	// 考虑换成 proto todo
-	if len(e.Command) <= 0 {
-		return errNoCommand
-	}
-	if e.Index <= 0 {
-		return errBadIndex
-	}
-	if e.Term <= 0 {
-		return errBadTerm
+func newLogEntry(log *raftLog , index uint64, term uint64, command []byte) (*logEntry, error) {
+
+	pb := &protobuf.LogEntry{
+		Index:       index,
+		Term:        term,
+		Command:     command,
 	}
 
-	commandSize := len(e.Command)
-	buf := make([]byte, 24+commandSize)
+	e := &logEntry{
+		pb:    pb,
+		log:   log,
+	}
 
-	binary.LittleEndian.PutUint64(buf[4:12], e.Term)
-	binary.LittleEndian.PutUint64(buf[12:20], e.Index)
-	binary.LittleEndian.PutUint32(buf[20:24], uint32(commandSize))
+	return e, nil
+}
 
-	copy(buf[24:], e.Command)
 
-	binary.LittleEndian.PutUint32(
-		buf[0:4],
-		crc32.ChecksumIEEE(buf[4:]),
-	)
+func (e *logEntry) encode(w io.Writer) (int,error) {
+	// 由原来的自定义的编码方式换成 proto todo
 
-	_, err := w.Write(buf)
-	return err
+	b, err := proto.Marshal(e.pb)
+	if err != nil {
+		return -1, err
+	}
+
+	if _, err = fmt.Fprintf(w, "%8x\n", len(b)); err != nil {
+		return -1, err
+	}
+
+	return w.Write(b)
 }
 
 // decode deserializes one log entry from the passed io.Reader.
 // 解码类型 ，先crc校验，再解析出term 、index 、command
-func (e *logEntry) decode(r io.Reader) error {
-	header := make([]byte, 24)
+// 改为protobuf
+func (e *logEntry) decode(r io.Reader) (int,error) {
 
-	if _, err := r.Read(header); err != nil {
-		return err
+	var length int
+	_, err := fmt.Fscanf(r, "%8x\n", &length)
+	if err != nil {
+		return -1, err
 	}
 
-	command := make([]byte, binary.LittleEndian.Uint32(header[20:24]))
+	data := make([]byte, length)
+	_, err = io.ReadFull(r, data)
 
-	if _, err := r.Read(command); err != nil {
-		return err
+	if err != nil {
+		return -1, err
 	}
 
-	crc := binary.LittleEndian.Uint32(header[:4])
-
-	check := crc32.NewIEEE()
-	check.Write(header[4:])
-	check.Write(command)
-
-	if crc != check.Sum32() {
-		return errInvalidChecksum
+	if err = proto.Unmarshal(data, e.pb); err != nil {
+		return -1, err
 	}
 
-	e.Term = binary.LittleEndian.Uint64(header[4:12])
-	e.Index = binary.LittleEndian.Uint64(header[12:20])
-	e.Command = command
-
-	return nil
+	return length + 8 + 1, nil
 }

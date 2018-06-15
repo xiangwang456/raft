@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package protobuf;
+
+message LogEntry {
+uint64 Index=1;
+uint64 Term=2;
+//string CommandName=3;
+bytes Command=4; // for nop-command
+}
