@@ -18,7 +18,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"io"
 )
 
 const (
@@ -252,20 +251,16 @@ func (s *Server) Init() error {
 	//	fmt.Errorf("raft: Initialization error: %s", err)
 	//}
 
-
 	// Update the term to the last term in the log.
 	//_, s.currentTerm = s.log.lastInfo()
 
 	return nil
 }
 
-
-
-
 // Start triggers the server to begin communicating with its peers.
 func (s *Server) Start() {
 	if err := s.Init(); err != nil {
-		panic("Initilalization error " )
+		panic("Initilalization error ")
 	}
 	go s.loop()
 }
@@ -808,7 +803,7 @@ func (s *Server) flush(peer Peer, ni *nextIndex) error {
 	}
 
 	if len(entries) > 0 {
-		newPrevLogIndex, err := ni.set(peer.id(), entries[len(entries)-1].Index, prevLogIndex)
+		newPrevLogIndex, err := ni.set(peer.id(), entries[len(entries)-1].Index(), prevLogIndex)
 		if err != nil {
 			s.logGeneric("flush to %d: while moving prevLogIndex forward: %s", peerID, err)
 			return err
@@ -895,16 +890,16 @@ func (s *Server) leaderSelect() {
 			// Append the command to our (leader) log
 			s.logGeneric("got command, appending")
 			currentTerm := s.term
-			entry := logEntry{
-				Index:           s.log.lastIndex() + 1,
-				Term:            currentTerm,
-				Command:         t.Command,
-				commandResponse: t.CommandResponse,
+			entry, err := newLogEntry(s.log, s.log.lastIndex()+1, currentTerm, t.Command, t.CommandResponse)
+			if err != nil {
+				panic(fmt.Sprint("create logentry error"))
 			}
+
 			if err := s.log.appendEntry(entry); err != nil {
 				t.Err <- err
 				continue
 			}
+
 			s.logGeneric(
 				"after append, commitIndex=%d lastIndex=%d lastTerm=%d",
 				s.log.getCommitIndex(),
@@ -935,15 +930,16 @@ func (s *Server) leaderSelect() {
 
 			// We're gonna write+replicate that config via log mechanisms.
 			// Prepare the on-commit callback.
-			entry := logEntry{
-				Index:           s.log.lastIndex() + 1,
-				Term:            s.term,
-				Command:         encodedConfiguration,
-				isConfiguration: true,
-				committed:       make(chan bool),
+			entry, err := newLogEntry(s.log, s.log.lastIndex()+1, s.term, encodedConfiguration, nil)
+			if err != nil {
+				panic(fmt.Sprintln("create logentry error"))
 			}
+
+			entry.isConfiguration = true
+			entry.isCommmited = make(chan bool)
+
 			go func() {
-				committed := <-entry.committed
+				committed := <-entry.isCommmited
 				if !committed {
 					s.config.changeAborted()
 					return
@@ -1198,7 +1194,7 @@ func (s *Server) handleAppendEntries(r appendEntries) (appendEntriesResponse, bo
 		var pm peerMap
 		if entry.isConfiguration {
 			//
-			commandBuf := bytes.NewBuffer(entry.Command)
+			commandBuf := bytes.NewBuffer(entry.Command())
 			if err := gob.NewDecoder(commandBuf).Decode(&pm); err != nil {
 				panic("gob decode of peers failed")
 			}
@@ -1220,10 +1216,10 @@ func (s *Server) handleAppendEntries(r appendEntries) (appendEntriesResponse, bo
 			// Expulsion recognition
 			//
 			if _, ok := pm[s.id]; !ok {
-				entry.committed = make(chan bool)
+				entry.isCommmited = make(chan bool)
 				go func() {
 					//   如果新的配置中没有包含当前节点，当前配置的这条日志一旦被提交了，则当前节点退出
-					if <-entry.committed {
+					if <-entry.isCommmited {
 						s.logGeneric("non-leader expelled; shutting down")
 						q := make(chan struct{})
 						s.quit <- q
@@ -1234,7 +1230,7 @@ func (s *Server) handleAppendEntries(r appendEntries) (appendEntriesResponse, bo
 		}
 
 		// Append entry to the log
-		if err := s.log.appendEntry(entry); err != nil {
+		if err := s.log.appendEntry(&entry); err != nil {
 			return appendEntriesResponse{
 				Term:    s.term,
 				Success: false,
@@ -1412,7 +1408,7 @@ func (s *Server) TakeSnapshot() error {
 	// We do not want to send the whole snapshot to the slightly slow machines
 	if lastIndex-s.log.startIndex > NumberOfLogEntriesAfterSnapshot {
 		compactIndex := lastIndex - s.log.startIndex
-		compactTerm := s.log.getEntry(compactIndex).Term
+		compactTerm := s.log.getEntry(compactIndex).Term()
 		s.log.compact(compactIndex, compactTerm)
 	}
 

@@ -1,39 +1,33 @@
 package raft
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
-	"hash/crc32"
 	"io"
 	"os"
 	"sync"
-	"time"
+
 	"github.com/golang/protobuf/proto"
 	"github.com/zoo-keeper/raft/protobuf"
-	"bytes"
-	"encoding/json"
-	"path"
 )
 
 var (
-	errTermTooSmall    = errors.New("term too small")
-	errIndexTooSmall   = errors.New("index too small")
-	errIndexTooBig     = errors.New("commit index too big")
-	errInvalidChecksum = errors.New("invalid checksum")
-	errNoCommand       = errors.New("no command")
-	errBadIndex        = errors.New("bad index")
-	errBadTerm         = errors.New("bad term")
+	errTermTooSmall  = errors.New("term too small")
+	errIndexTooSmall = errors.New("index too small")
+	errIndexTooBig   = errors.New("commit index too big")
+	errNoCommand     = errors.New("no command")
+	errBadIndex      = errors.New("bad index")
+	errBadTerm       = errors.New("bad term")
 )
 
 type raftLog struct {
 	sync.RWMutex
-	file      *os.File
-	entries    []logEntry
+	file       *os.File
+	entries    []*logEntry
 	commitPos  uint64
-	startIndex uint64 //todo start index的更新
-	startTerm  uint64 // todo start  item 的更新
-	apply      func(uint64, []byte) []byte
+	startIndex uint64                      //todo start index的更新
+	startTerm  uint64                      // todo start  item 的更新
+	apply      func(uint64, []byte) []byte //commit时
 	path       string
 }
 
@@ -41,17 +35,16 @@ func newRaftLog(store *os.File, apply func(uint64, []byte) []byte) *raftLog {
 
 	// 如果有文件 ，则从文件恢复，否则创建新的config
 	l := &raftLog{
-		store:     store,
-		entries:   []logEntry{},
+
+		entries:   make([]*logEntry, 0),
 		commitPos: 0, // no commits to begin with
 		apply:     apply,
 	}
-	l.recover(store)
+
 	return l
 }
 
-
-func (l *raftLog) open(path string) error{
+func (l *raftLog) open(path string) error {
 	// 从日志中读取
 	var readBytes int64
 
@@ -65,44 +58,41 @@ func (l *raftLog) open(path string) error{
 		if os.IsNotExist(err) {
 			l.file, err = os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0600)
 		}
-		return err
+		return nil
 	}
 
-
-	for { //todo
+	for {
 		// Instantiate log entry and decode into it.
-		entry, _ := newLogEntry(l, 0, 0, nil)
+		entry, _ := newLogEntry(l, 0, 0, nil, nil)
 		entry.Position, _ = l.file.Seek(0, os.SEEK_CUR)
 
-		//n, err := entry.decode(l.file)
-		//if err != nil {
-		//	if err == io.EOF {
-		//		debugln("open.log.append: finish ")
-		//	} else {
-		//		if err = os.Truncate(path, readBytes); err != nil {
-		//			return fmt.Errorf("raft.Log: Unable to recover: %v", err)
-		//		}
-		//	}
-		//	break
-		//}
-		//if entry.Index() > l.startIndex {
-		//	// Append entry.
-		//	l.entries = append(l.entries, entry)
-		//	if entry.Index() <= l.commitIndex {
-		//		command, err := newCommand(entry.CommandName(), entry.Command())
-		//		if err != nil {
-		//			continue
-		//		}
-		//		l.ApplyFunc(entry, command)
-		//	}
-
+		n, err := entry.decode(l.file)
+		if err == io.EOF {
+			break
+		} else {
+			if err = os.Truncate(path, readBytes); err != nil {
+				return fmt.Errorf("raft.Log: Unable to recover: %v", err)
+			}
 		}
 
-		readBytes += int64(0)
+		if entry.Index() > l.startIndex {
+
+			l.entries = append(l.entries, entry)
+			if entry.Index() <= l.startIndex {
+				l.apply(entry.Index(), entry.Command())
+			}
+
+			if entry.Index() <= l.getCommitIndex() {
+
+				l.apply(entry.pb.GetIndex(), entry.pb.GetCommand())
+			}
+		}
+		readBytes += int64(n)
+
+	}
 
 	return nil
 }
-
 
 // entriesAfter returns a slice of log entries after (i.e. not including) the
 // passed index, and the term of the log entry specified by index, as a
@@ -124,10 +114,10 @@ func (l *raftLog) entriesAfter(index uint64) ([]logEntry, uint64) {
 	pos := 0
 	lastTerm := uint64(0)
 	for ; pos < len(l.entries); pos++ {
-		if l.entries[pos].Index > index {
+		if l.entries[pos].Index() > index {
 			break
 		}
-		lastTerm = l.entries[pos].Term
+		lastTerm = l.entries[pos].Term()
 	}
 
 	a := l.entries[pos:]
@@ -138,13 +128,14 @@ func (l *raftLog) entriesAfter(index uint64) ([]logEntry, uint64) {
 	return stripResponseChannels(a), lastTerm
 }
 
-func stripResponseChannels(a []logEntry) []logEntry {
+func stripResponseChannels(a []*logEntry) []logEntry {
 	stripped := make([]logEntry, len(a))
 	for i, entry := range a {
 		stripped[i] = logEntry{
-			Index:           entry.Index,
-			Term:            entry.Term,
-			Command:         entry.Command,
+			pb:              entry.pb,
+			Position:        entry.Position,
+			log:             entry.log,
+			isCommmited:     entry.isCommmited,
 			commandResponse: nil,
 		}
 	}
@@ -176,7 +167,7 @@ func (l *raftLog) compact(index uint64, term uint64) error {
 		//position, _ := l.store.Seek(0,0) //todo right ?
 		//entry.position = uint64(position)
 
-		if err = entry.encode(file); err != nil {
+		if _, err = entry.encode(file); err != nil {
 			file.Close()
 			os.Remove(newFilePah)
 			return err
@@ -186,7 +177,7 @@ func (l *raftLog) compact(index uint64, term uint64) error {
 	file.Sync()
 
 	// 4、更新日志里的信息
-	old_file := l.store
+	old_file := l.file
 
 	// 重命名
 	err = os.Rename(newFilePah, l.path)
@@ -195,7 +186,8 @@ func (l *raftLog) compact(index uint64, term uint64) error {
 		os.Remove(newFilePah)
 		return err
 	}
-	l.store = file
+
+	l.file = file
 
 	old_file.Close()
 
@@ -215,10 +207,10 @@ func (l *raftLog) contains(index, term uint64) bool {
 
 	// It's not necessarily true that l.entries[i] has index == i.
 	for _, entry := range l.entries {
-		if entry.Index == index && entry.Term == term {
+		if entry.Index() == index && entry.Term() == term {
 			return true
 		}
-		if entry.Index > index || entry.Term > term {
+		if entry.Index() > index || entry.Term() > term {
 			break
 		}
 	}
@@ -256,29 +248,29 @@ func (l *raftLog) ensureLastIs(index, term uint64) error {
 				close(l.entries[pos].commandResponse)
 				l.entries[pos].commandResponse = nil
 			}
-			if l.entries[pos].committed != nil {
-				l.entries[pos].committed <- false
-				close(l.entries[pos].committed)
-				l.entries[pos].committed = nil
+			if l.entries[pos].isCommmited != nil {
+				l.entries[pos].isCommmited <- false
+				close(l.entries[pos].isCommmited)
+				l.entries[pos].isCommmited = nil
 			}
 		}
-		l.entries = []logEntry{}
+		l.entries = make([]*logEntry, 0)
 		return nil
 	}
 
 	// Normal case: find the position of the matching log entry.
 	pos := 0
 	for ; pos < len(l.entries); pos++ {
-		if l.entries[pos].Index < index {
+		if l.entries[pos].Index() < index {
 			continue // didn't find it yet
 		}
-		if l.entries[pos].Index > index {
+		if l.entries[pos].Index() > index {
 			return errBadIndex // somehow went past it
 		}
-		if l.entries[pos].Index != index {
+		if l.entries[pos].Index() != index {
 			panic("not <, not >, but somehow !=")
 		}
-		if l.entries[pos].Term != term {
+		if l.entries[pos].Term() != term {
 			return errBadTerm
 		}
 		break // good
@@ -304,10 +296,10 @@ func (l *raftLog) ensureLastIs(index, term uint64) error {
 			close(l.entries[pos].commandResponse)
 			l.entries[pos].commandResponse = nil
 		}
-		if l.entries[pos].committed != nil {
-			l.entries[pos].committed <- false
-			close(l.entries[pos].committed)
-			l.entries[pos].committed = nil
+		if l.entries[pos].isCommmited != nil {
+			l.entries[pos].isCommmited <- false
+			close(l.entries[pos].isCommmited)
+			l.entries[pos].isCommmited = nil
 		}
 	}
 
@@ -333,7 +325,7 @@ func (l *raftLog) getCommitIndexWithLock() uint64 {
 	if int(l.commitPos) >= len(l.entries) {
 		panic(fmt.Sprintf("commitPos %d > len(l.entries) %d; bad bookkeeping in raftLog", l.commitPos, len(l.entries)))
 	}
-	return l.entries[l.commitPos].Index
+	return l.entries[l.commitPos].Index()
 }
 
 func (l *raftLog) getEntry(index uint64) logEntry {
@@ -351,7 +343,7 @@ func (l *raftLog) lastIndexWithLock() uint64 {
 	if len(l.entries) <= 0 {
 		return 0
 	}
-	return l.entries[len(l.entries)-1].Index
+	return l.entries[len(l.entries)-1].Index()
 }
 
 // lastTerm returns the term of the most recent log entry.
@@ -365,23 +357,23 @@ func (l *raftLog) lastTermWithLock() uint64 {
 	if len(l.entries) <= 0 {
 		return 0
 	}
-	return l.entries[len(l.entries)-1].Term
+	return l.entries[len(l.entries)-1].Term()
 }
 
 // appendEntry appends the passed log entry to the log. It will return an error
 // if the entry's term is smaller than the log's most recent term, or if the
 // entry's index is too small relative to the log's most recent entry.
-func (l *raftLog) appendEntry(entry logEntry) error {
+func (l *raftLog) appendEntry(entry *logEntry) error {
 	l.Lock()
 	defer l.Unlock()
 
 	if len(l.entries) > 0 {
 		lastTerm := l.lastTermWithLock()
-		if entry.Term < lastTerm {
+		if entry.Term() < lastTerm {
 			return errTermTooSmall
 		}
 		lastIndex := l.lastIndexWithLock()
-		if entry.Term == lastTerm && entry.Index <= lastIndex {
+		if entry.Term() == lastTerm && entry.Index() <= lastIndex {
 			return errIndexTooSmall
 		}
 	}
@@ -402,40 +394,38 @@ func (l *raftLog) commitTo(commitIndex uint64) error {
 	l.Lock()
 	defer l.Unlock()
 
-	// Reject old commit indexes
+	// 已经commit过
 	if commitIndex < l.getCommitIndexWithLock() {
 		return errIndexTooSmall
 	}
 
-	// Reject new commit indexes
+	// 要 commit 的 index 大于当前最大的 index
 	if commitIndex > l.lastIndexWithLock() {
 		return errIndexTooBig
 	}
 
-	// If we've already committed to the commitIndex, great!
+	// 已经commit过当前元素
 	if commitIndex == l.getCommitIndexWithLock() {
 		return nil
 	}
 
-	// We should start committing at precisely the last commitPos + 1
+	// 从上次commit过 + 1 位置开始 commit
 	pos := l.commitPos + 1
 	if pos < 0 {
 		panic("pending commit pos < 0")
 	}
 
-	// Commit entries between our existing commit index and the passed index.
-	// Remember to include the passed index.
 	for {
 		// Sanity checks. TODO replace with plain `for` when this is stable.
 		if int(pos) >= len(l.entries) {
 			panic(fmt.Sprintf("commitTo pos=%d advanced past all log entries (%d)", pos, len(l.entries)))
 		}
-		if l.entries[pos].Index > commitIndex {
+		if l.entries[pos].Index() > commitIndex {
 			panic("commitTo advanced past the desired commitIndex")
 		}
 
 		// Encode the entry to persistent storage.
-		if err := l.entries[pos].encode(l.store); err != nil {
+		if _, err := l.entries[pos].encode(l.file); err != nil {
 			return err
 		}
 
@@ -443,34 +433,25 @@ func (l *raftLog) commitTo(commitIndex uint64) error {
 		// Send the responses to the waiting client, if applicable.
 		// 如果该日志不是配置相关日志，则调用日志的apply方法，并等待回应
 		if !l.entries[pos].isConfiguration {
-			resp := l.apply(l.entries[pos].Index, l.entries[pos].Command)
-			if l.entries[pos].commandResponse != nil {
-				select {
-				case l.entries[pos].commandResponse <- resp:
-					break
-				case <-time.After(maximumElectionTimeout()): // << ElectionInterval
-					panic("uncoöperative command response receiver")
-				}
-				close(l.entries[pos].commandResponse)
-				l.entries[pos].commandResponse = nil
-			}
+			l.apply(l.entries[pos].pb.GetIndex(), l.entries[pos].pb.GetCommand())
+
 		}
 
 		// Signal the entry has been committed, if applicable.
-		if l.entries[pos].committed != nil {
-			l.entries[pos].committed <- true
-			close(l.entries[pos].committed)
-			l.entries[pos].committed = nil
+		if l.entries[pos].isCommmited != nil {
+			l.entries[pos].isCommmited <- true
+			close(l.entries[pos].isCommmited)
+			l.entries[pos].isCommmited = nil
 		}
 
 		// Mark our commit position cursor.
 		l.commitPos = pos
 
 		// If that was the last one, we're done.
-		if l.entries[pos].Index == commitIndex {
+		if l.entries[pos].Index() == commitIndex {
 			break
 		}
-		if l.entries[pos].Index > commitIndex {
+		if l.entries[pos].Index() > commitIndex {
 			panic(fmt.Sprintf(
 				"current entry Index %d is beyond our desired commitIndex %d",
 				l.entries[pos].Index,
@@ -492,31 +473,44 @@ func (l *raftLog) commitTo(commitIndex uint64) error {
 // executed against the node state machine when the log entry is successfully
 // replicated.
 type logEntry struct {
-	pb       *protobuf.LogEntry
-	Position int64 // 文件中的位置
-	log      *raftLog
-
-
+	pb              *protobuf.LogEntry
+	Position        int64 // 文件中的位置
+	log             *raftLog
+	commandResponse chan<- []byte
+	isCommmited     chan bool
+	isConfiguration bool
 }
 
-func newLogEntry(log *raftLog , index uint64, term uint64, command []byte) (*logEntry, error) {
+func newLogEntry(log *raftLog, index uint64, term uint64, command []byte, commandResponse chan<- []byte) (*logEntry, error) {
 
 	pb := &protobuf.LogEntry{
-		Index:       index,
-		Term:        term,
-		Command:     command,
+		Index:   index,
+		Term:    term,
+		Command: command,
 	}
 
 	e := &logEntry{
-		pb:    pb,
-		log:   log,
+		pb:              pb,
+		log:             log,
+		commandResponse: commandResponse,
 	}
 
 	return e, nil
 }
 
+func (e *logEntry) Index() uint64 {
+	return e.pb.GetIndex()
+}
 
-func (e *logEntry) encode(w io.Writer) (int,error) {
+func (e *logEntry) Term() uint64 {
+	return e.pb.GetTerm()
+}
+
+func (e *logEntry) Command() []byte {
+	return e.pb.GetCommand()
+}
+
+func (e *logEntry) encode(w io.Writer) (int, error) {
 	// 由原来的自定义的编码方式换成 proto todo
 
 	b, err := proto.Marshal(e.pb)
@@ -534,7 +528,7 @@ func (e *logEntry) encode(w io.Writer) (int,error) {
 // decode deserializes one log entry from the passed io.Reader.
 // 解码类型 ，先crc校验，再解析出term 、index 、command
 // 改为protobuf
-func (e *logEntry) decode(r io.Reader) (int,error) {
+func (e *logEntry) decode(r io.Reader) (int, error) {
 
 	var length int
 	_, err := fmt.Fscanf(r, "%8x\n", &length)
