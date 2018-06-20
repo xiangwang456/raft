@@ -49,13 +49,14 @@ var (
 	errUnknownLeader         = errors.New("unknown leader")
 	errDeposed               = errors.New("deposed during replication")
 	errAppendEntriesRejected = errors.New("appendEntries RPC rejected")
-	errReplicationFailed     = errors.New("command replication failed (but will keep retrying)")
-	errOutOfSync             = errors.New("out of sync")
-	errAlreadyRunning        = errors.New("already running")
-	errPendingSnapNil        = errors.New("pending snapshot is nil")
-	errMissingStateMachien   = errors.New("Snapshot : Cannot create snapshot , missing state machine")
-	errSnapshotUnfinshed     = errors.New("Snapshot : last snapshot is not finished")
-	errBadSnapshot           = errors.New("Bad Snapshot Files")
+	errReplicationFailed   = errors.New("command replication failed (but will keep retrying)")
+	errOutOfSync           = errors.New("out of sync")
+	errAlreadyRunning      = errors.New("already running")
+	errPendingSnapNil      = errors.New("pending snapshot is nil")
+	errMissingStateMachien = errors.New("Snapshot : Cannot create snapshot , missing state machine")
+	errSnapshotUnfinshed   = errors.New("Snapshot : last snapshot is not finished")
+	errBadSnapshot         = errors.New("Bad Snapshot Files")
+	errFileNotOpen         = errors.New("Log is not open")
 )
 
 // resetElectionTimeoutMS sets the minimum and maximum election timeouts to the
@@ -245,14 +246,9 @@ func (s *Server) Init() error {
 		return fmt.Errorf("raft: Initialization error: %s", err)
 	}
 
-	//读取配置文件
-	//if err := s.(); err != nil {
-	//	//读取文件，没有则创建文件，如果有就恢复文件
-	//	fmt.Errorf("raft: Initialization error: %s", err)
-	//}
-
-	// Update the term to the last term in the log.
-	//_, s.currentTerm = s.log.lastInfo()
+	//读取配置文件，没有则创建文件，如果有就恢复文件
+	s.log.path = path.Join(path.Join(s.path, string(s.id)+".log"))
+	s.log.open(s.log.path)
 
 	return nil
 }

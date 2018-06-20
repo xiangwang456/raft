@@ -9,6 +9,7 @@ import (
 
 	"github.com/golang/protobuf/proto"
 	"github.com/zoo-keeper/raft/protobuf"
+	"bufio"
 )
 
 var (
@@ -31,7 +32,7 @@ type raftLog struct {
 	path       string
 }
 
-func newRaftLog(store *os.File, apply func(uint64, []byte) []byte) *raftLog {
+func newRaftLog(apply func(uint64, []byte) []byte) *raftLog {
 
 	// 如果有文件 ，则从文件恢复，否则创建新的config
 	l := &raftLog{
@@ -40,6 +41,7 @@ func newRaftLog(store *os.File, apply func(uint64, []byte) []byte) *raftLog {
 		commitPos: 0, // no commits to begin with
 		apply:     apply,
 	}
+
 
 	return l
 }
@@ -92,6 +94,10 @@ func (l *raftLog) open(path string) error {
 	}
 
 	return nil
+}
+
+func (l *raftLog) sync() error {
+	return l.file.Sync()
 }
 
 // entriesAfter returns a slice of log entries after (i.e. not including) the
@@ -322,14 +328,21 @@ func (l *raftLog) getCommitIndexWithLock() uint64 {
 	if l.commitPos < 0 {
 		return 0
 	}
-	if int(l.commitPos) >= len(l.entries) {
+	if l.commitPos >= uint64(len(l.entries))+l.startIndex {
 		panic(fmt.Sprintf("commitPos %d > len(l.entries) %d; bad bookkeeping in raftLog", l.commitPos, len(l.entries)))
 	}
-	return l.entries[l.commitPos].Index()
+	return l.entries[l.commitPos-l.startIndex-1 ].Index()
 }
 
-func (l *raftLog) getEntry(index uint64) logEntry {
-	return logEntry{} //todo
+func (l *raftLog) getEntry(index uint64) *logEntry {
+	l.RWMutex.RLock()
+	defer l.RWMutex.RUnlock()
+
+	if index <= l.startIndex || index > (l.startIndex+uint64(len(l.entries))) {
+		return nil
+	}
+
+	return l.entries[index-l.startIndex-1]
 }
 
 // lastIndex returns the index of the most recent log entry.
@@ -378,8 +391,33 @@ func (l *raftLog) appendEntry(entry *logEntry) error {
 		}
 	}
 
-	l.entries = append(l.entries, entry)
+	w := bufio.NewWriter(l.file)
+	position, err := l.writeEntry(entry, w);
+	if err != nil {
+		return err
+	}
+	entry.Position = position
+
+	w.Flush()
+	err = l.sync();
+	if err != nil {
+		panic(err)
+	}
+
 	return nil
+}
+
+func (l *raftLog) writeEntry(entry *logEntry, w io.Writer) (int64, error) {
+	if l.file == nil {
+		return -1, errFileNotOpen
+	}
+
+	size, err := entry.encode(w);
+	if err != nil {
+		return -1, err
+	}
+	l.entries = append(l.entries, entry)
+	return int64(size), nil
 }
 
 // commitTo commits all log entries up to and including the passed commitIndex.
@@ -409,6 +447,7 @@ func (l *raftLog) commitTo(commitIndex uint64) error {
 		return nil
 	}
 
+	l.sync()
 	// 从上次commit过 + 1 位置开始 commit
 	pos := l.commitPos + 1
 	if pos < 0 {
